@@ -7,6 +7,27 @@ from urllib.parse import urlparse, parse_qs
 import config
 
 
+def _find_radio_items(data) -> List[Dict]:
+    """
+    Recursively search any JSON structure for objects that look like radio
+    stations (dicts that contain a stream URL, usually under 'src').
+    """
+    results: List[Dict] = []
+
+    if isinstance(data, list):
+        for item in data:
+            results.extend(_find_radio_items(item))
+    elif isinstance(data, dict):
+        # If this dict itself looks like a station (has 'src'), keep it
+        if "src" in data and isinstance(data["src"], str):
+            results.append(data)
+        # Recurse into all values
+        for value in data.values():
+            results.extend(_find_radio_items(value))
+
+    return results
+
+
 def extract_youtube_video_id(url: str) -> Optional[str]:
     """Extract YouTube video ID from various URL formats."""
     if not url:
@@ -69,7 +90,8 @@ def parse_music_data(data: List[Dict]) -> List[Dict]:
         if not isinstance(item, dict):
             continue
         
-        name = item.get("name", "Unknown")
+        # Some files use "title" instead of "name"
+        name = item.get("name") or item.get("title") or "Unknown"
         embed = item.get("embed")
         
         if embed:
@@ -93,7 +115,8 @@ def parse_movies_data(data: List[Dict]) -> List[Dict]:
         if not isinstance(item, dict):
             continue
         
-        name = item.get("name", "Unknown")
+        # Some files use "title" instead of "name"
+        name = item.get("name") or item.get("title") or "Unknown"
         embed = item.get("embed")
         
         if embed:
@@ -146,17 +169,33 @@ def parse_json_file(file_type: str) -> List[Dict]:
         return []
     
     # Handle different data structures
-    if isinstance(data, list):
-        items = data
-    elif isinstance(data, dict):
-        # Try common keys
-        items = data.get("items", data.get("data", data.get("channels", data.get("stations", []))))
-        if not items:
-            # If it's a single item, wrap it
-            items = [data]
+    if file_type == "radio":
+        # Be very flexible for radio: search anywhere for station-like objects
+        items = _find_radio_items(data)
     else:
-        print(f"Unexpected data structure in {file_type}")
-        return []
+        if isinstance(data, list):
+            # Root is already a list of items
+            items = data
+        elif isinstance(data, dict):
+            # File-type-specific roots first (these match the actual eternityready JSONs)
+            if file_type == "music" and isinstance(data.get("music"), list):
+                items = data["music"]
+            elif file_type == "movies" and isinstance(data.get("movies"), list):
+                items = data["movies"]
+            elif file_type == "channels" and isinstance(data.get("channels"), list):
+                items = data["channels"]
+            else:
+                # Generic fallbacks in case structure changes again
+                for key in ["items", "data", "channels", "stations", "music", "movies"]:
+                    if isinstance(data.get(key), list):
+                        items = data[key]
+                        break
+                else:
+                    # If it's a single item or unexpected structure, wrap it
+                    items = [data]
+        else:
+            print(f"Unexpected data structure in {file_type}: {type(data)}")
+            return []
     
     # Parse based on file type
     if file_type == "radio":

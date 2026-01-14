@@ -28,6 +28,25 @@ def _find_radio_items(data) -> List[Dict]:
     return results
 
 
+def _find_items_with_key(data, key: str) -> List[Dict]:
+    """
+    Recursively search any JSON structure for dicts that contain a given key.
+    Used for music/movies where items may be nested under categories.
+    """
+    results: List[Dict] = []
+
+    if isinstance(data, list):
+        for item in data:
+            results.extend(_find_items_with_key(item, key))
+    elif isinstance(data, dict):
+        if key in data and isinstance(data[key], str):
+            results.append(data)
+        for value in data.values():
+            results.extend(_find_items_with_key(value, key))
+
+    return results
+
+
 def extract_youtube_video_id(url: str) -> Optional[str]:
     """Extract YouTube video ID from various URL formats."""
     if not url:
@@ -93,17 +112,21 @@ def parse_music_data(data: List[Dict]) -> List[Dict]:
         # Some files use "title" instead of "name"
         name = item.get("name") or item.get("title") or "Unknown"
         embed = item.get("embed")
-        
-        if embed:
-            video_id = extract_youtube_video_id(embed)
-            if video_id:
-                results.append({
-                    "type": "music",
-                    "name": name,
-                    "url": embed,
-                    "video_id": video_id,
-                    "source_file": "music.json"
-                })
+        if not embed:
+            continue
+
+        # We keep all items, even if the URL is duplicated or not a YouTube URL.
+        # Non-YouTube embeds will have video_id=None and can still be checked
+        # generically by the browser checker.
+        video_id = extract_youtube_video_id(embed)
+
+        results.append({
+            "type": "music",
+            "name": name,
+            "url": embed,
+            "video_id": video_id,
+            "source_file": "music.json"
+        })
     
     return results
 
@@ -118,17 +141,19 @@ def parse_movies_data(data: List[Dict]) -> List[Dict]:
         # Some files use "title" instead of "name"
         name = item.get("name") or item.get("title") or "Unknown"
         embed = item.get("embed")
-        
-        if embed:
-            video_id = extract_youtube_video_id(embed)
-            if video_id:
-                results.append({
-                    "type": "movie",
-                    "name": name,
-                    "url": embed,
-                    "video_id": video_id,
-                    "source_file": "movies.json"
-                })
+        if not embed:
+            continue
+
+        # No dedup + no requirement for YouTube; count all movie entries
+        video_id = extract_youtube_video_id(embed)
+
+        results.append({
+            "type": "movie",
+            "name": name,
+            "url": embed,
+            "video_id": video_id,
+            "source_file": "movies.json"
+        })
     
     return results
 
@@ -169,33 +194,52 @@ def parse_json_file(file_type: str) -> List[Dict]:
         return []
     
     # Handle different data structures
-    if file_type == "radio":
-        # Be very flexible for radio: search anywhere for station-like objects
-        items = _find_radio_items(data)
-    else:
-        if isinstance(data, list):
-            # Root is already a list of items
-            items = data
-        elif isinstance(data, dict):
-            # File-type-specific roots first (these match the actual eternityready JSONs)
-            if file_type == "music" and isinstance(data.get("music"), list):
+    if isinstance(data, list):
+        # Root is already a list of items
+        items = data
+    elif isinstance(data, dict):
+        # Prefer known top-level lists first
+        if file_type == "radio":
+            if isinstance(data.get("radio"), list):
+                items = data["radio"]
+            elif isinstance(data.get("stations"), list):
+                items = data["stations"]
+            else:
+                # Fallback: search entire structure for station-like dicts
+                items = _find_radio_items(data)
+        elif file_type == "music":
+            if isinstance(data.get("music"), list):
                 items = data["music"]
-            elif file_type == "movies" and isinstance(data.get("movies"), list):
+            else:
+                # Fallback: find any dicts with an 'embed' key
+                items = _find_items_with_key(data, "embed")
+        elif file_type == "movies":
+            if isinstance(data.get("movies"), list):
                 items = data["movies"]
-            elif file_type == "channels" and isinstance(data.get("channels"), list):
+            else:
+                items = _find_items_with_key(data, "embed")
+        elif file_type == "channels":
+            if isinstance(data.get("channels"), list):
                 items = data["channels"]
             else:
                 # Generic fallbacks in case structure changes again
-                for key in ["items", "data", "channels", "stations", "music", "movies"]:
+                for key in ["items", "data", "channels", "stations"]:
                     if isinstance(data.get(key), list):
                         items = data[key]
                         break
                 else:
-                    # If it's a single item or unexpected structure, wrap it
                     items = [data]
         else:
-            print(f"Unexpected data structure in {file_type}: {type(data)}")
-            return []
+            # Generic handling for any future types
+            for key in ["items", "data"]:
+                if isinstance(data.get(key), list):
+                    items = data[key]
+                    break
+            else:
+                items = [data]
+    else:
+        print(f"Unexpected data structure in {file_type}: {type(data)}")
+        return []
     
     # Parse based on file type
     if file_type == "radio":

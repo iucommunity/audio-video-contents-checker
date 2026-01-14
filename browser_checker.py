@@ -150,30 +150,58 @@ class BrowserChecker:
             
             # Check for error messages in page content
             page_text = await page.evaluate("document.body.innerText")
+            page_html = await page.evaluate("document.body.innerHTML")
             
+            page_text_lower = page_text.lower()
+            page_html_lower = page_html.lower()
+            
+            # Check for "Watch on YouTube" button - this means video exists but embedding is restricted
+            # This is actually a working video, just not embeddable
+            watch_on_youtube_indicators = [
+                "watch on youtube",
+                "watch video on youtube",
+                "watch on yt"
+            ]
+            
+            has_watch_button = any(indicator in page_text_lower or indicator in page_html_lower 
+                                  for indicator in watch_on_youtube_indicators)
+            
+            # Check for actual error messages (video doesn't exist, removed, etc.)
             error_indicators = [
                 "video unavailable",
                 "private video",
                 "this video is not available",
                 "video has been removed",
                 "this video does not exist",
-                "playback error"
+                "playback error",
+                "video has been deleted"
             ]
             
-            page_text_lower = page_text.lower()
-            for indicator in error_indicators:
-                if indicator in page_text_lower:
-                    await page.close()
-                    return {
-                        "status": "broken",
-                        "error_message": f"YouTube error: {indicator}",
-                        "check_time": None
-                    }
+            has_error = any(indicator in page_text_lower for indicator in error_indicators)
+            
+            # If we see "Watch on YouTube" button, video exists (just restricted embedding)
+            if has_watch_button and not has_error:
+                await page.close()
+                return {
+                    "status": "working",
+                    "error_message": "Video available but embedding restricted (Watch on YouTube button present)",
+                    "check_time": None
+                }
+            
+            # If we see actual errors, mark as broken
+            if has_error:
+                error_msg = next((indicator for indicator in error_indicators if indicator in page_text_lower), "Unknown error")
+                await page.close()
+                return {
+                    "status": "broken",
+                    "error_message": f"YouTube error: {error_msg}",
+                    "check_time": None
+                }
             
             # Try to check player state using YouTube IFrame API if available
             try:
-                # Wait for iframe to load
-                await page.wait_for_selector("iframe", timeout=5000)
+                # Wait for iframe to load (with longer timeout for restricted embeds)
+                await page.wait_for_selector("iframe", timeout=10000)
                 
                 # Check if player is present
                 player_check = await page.evaluate("""
@@ -190,6 +218,14 @@ class BrowserChecker:
                 """)
                 
                 if player_check.get("error"):
+                    # If no iframe but we saw "Watch on YouTube", it's still working
+                    if has_watch_button:
+                        await page.close()
+                        return {
+                            "status": "working",
+                            "error_message": "Video available but embedding restricted",
+                            "check_time": None
+                        }
                     await page.close()
                     return {
                         "status": "broken",
@@ -210,6 +246,14 @@ class BrowserChecker:
                 """)
                 
                 if not has_player:
+                    # If no player but we saw "Watch on YouTube", it's still working
+                    if has_watch_button:
+                        await page.close()
+                        return {
+                            "status": "working",
+                            "error_message": "Video available but embedding restricted",
+                            "check_time": None
+                        }
                     await page.close()
                     return {
                         "status": "broken",
@@ -225,6 +269,14 @@ class BrowserChecker:
                 }
                 
             except PlaywrightTimeoutError:
+                # If we can't find iframe, check if we saw "Watch on YouTube" button
+                if has_watch_button:
+                    await page.close()
+                    return {
+                        "status": "working",
+                        "error_message": "Video available but embedding restricted",
+                        "check_time": None
+                    }
                 # If we can't find iframe, might still be loading or error
                 await page.close()
                 return {

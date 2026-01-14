@@ -145,12 +145,47 @@ class BrowserChecker:
             # Load YouTube embed
             await page.goto(embed_url, wait_until="domcontentloaded")
             
-            # Wait a bit for YouTube player to initialize
-            await asyncio.sleep(3)
+            # Wait longer for YouTube player/page to fully load (restricted embeds take time)
+            await asyncio.sleep(5)
             
-            # Check for error messages in page content
+            # Check for error messages and "Watch on YouTube" button in page content
             page_text = await page.evaluate("document.body.innerText")
             page_html = await page.evaluate("document.body.innerHTML")
+            
+            # Also check for YouTube redirect links/buttons
+            has_youtube_link = await page.evaluate("""
+                () => {
+                    // Check for links that go to youtube.com/watch (Watch on YouTube button)
+                    const links = document.querySelectorAll('a[href*="youtube.com/watch"], a[href*="youtu.be"]');
+                    if (links.length > 0) return true;
+                    
+                    // Check for buttons/elements with YouTube-related text or href
+                    const allElements = Array.from(document.querySelectorAll('button, a, div, span'));
+                    for (const elem of allElements) {
+                        const text = (elem.innerText || elem.textContent || '').toLowerCase();
+                        const href = elem.href || elem.getAttribute('href') || '';
+                        const onclick = elem.getAttribute('onclick') || '';
+                        
+                        // Check for YouTube watch URLs
+                        if (href.includes('youtube.com/watch') || href.includes('youtu.be')) {
+                            return true;
+                        }
+                        
+                        // Check for "watch" + "youtube" in text (Watch on YouTube button)
+                        if ((text.includes('watch') && text.includes('youtube')) || 
+                            text.includes('watch on youtube') || 
+                            text.includes('watch video on youtube')) {
+                            return true;
+                        }
+                        
+                        // Check onclick handlers that might redirect to YouTube
+                        if (onclick.includes('youtube.com') || onclick.includes('youtu.be')) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
             
             page_text_lower = page_text.lower()
             page_html_lower = page_html.lower()
@@ -160,11 +195,14 @@ class BrowserChecker:
             watch_on_youtube_indicators = [
                 "watch on youtube",
                 "watch video on youtube",
-                "watch on yt"
+                "watch on yt",
+                "watch video",
+                "youtube.com/watch"
             ]
             
-            has_watch_button = any(indicator in page_text_lower or indicator in page_html_lower 
-                                  for indicator in watch_on_youtube_indicators)
+            has_watch_button = (has_youtube_link or 
+                              any(indicator in page_text_lower or indicator in page_html_lower 
+                                  for indicator in watch_on_youtube_indicators))
             
             # Check for actual error messages (video doesn't exist, removed, etc.)
             error_indicators = [
@@ -269,12 +307,55 @@ class BrowserChecker:
                 }
                 
             except PlaywrightTimeoutError:
-                # If we can't find iframe, check if we saw "Watch on YouTube" button
-                if has_watch_button:
+                # Re-check for "Watch on YouTube" button after timeout (page might have loaded more)
+                page_text_retry = await page.evaluate("document.body.innerText")
+                page_html_retry = await page.evaluate("document.body.innerHTML")
+                has_youtube_link_retry = await page.evaluate("""
+                    () => {
+                        // Check for links that go to youtube.com/watch (Watch on YouTube button)
+                        const links = document.querySelectorAll('a[href*="youtube.com/watch"], a[href*="youtu.be"]');
+                        if (links.length > 0) return true;
+                        
+                        // Check for buttons/elements with YouTube-related text or href
+                        const allElements = Array.from(document.querySelectorAll('button, a, div, span'));
+                        for (const elem of allElements) {
+                            const text = (elem.innerText || elem.textContent || '').toLowerCase();
+                            const href = elem.href || elem.getAttribute('href') || '';
+                            const onclick = elem.getAttribute('onclick') || '';
+                            
+                            // Check for YouTube watch URLs
+                            if (href.includes('youtube.com/watch') || href.includes('youtu.be')) {
+                                return true;
+                            }
+                            
+                            // Check for "watch" + "youtube" in text (Watch on YouTube button)
+                            if ((text.includes('watch') && text.includes('youtube')) || 
+                                text.includes('watch on youtube') || 
+                                text.includes('watch video on youtube')) {
+                                return true;
+                            }
+                            
+                            // Check onclick handlers that might redirect to YouTube
+                            if (onclick.includes('youtube.com') || onclick.includes('youtu.be')) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                
+                page_text_retry_lower = page_text_retry.lower()
+                page_html_retry_lower = page_html_retry.lower()
+                has_watch_button_retry = (has_youtube_link_retry or 
+                                         any(indicator in page_text_retry_lower or indicator in page_html_retry_lower 
+                                             for indicator in watch_on_youtube_indicators))
+                
+                # If we can't find iframe but we see "Watch on YouTube" button, it's working
+                if has_watch_button or has_watch_button_retry:
                     await page.close()
                     return {
                         "status": "working",
-                        "error_message": "Video available but embedding restricted",
+                        "error_message": "Video available but embedding restricted (Watch on YouTube button present)",
                         "check_time": None
                     }
                 # If we can't find iframe, might still be loading or error

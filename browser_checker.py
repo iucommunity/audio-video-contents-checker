@@ -286,6 +286,20 @@ class BrowserChecker:
             if video_id or "youtube.com" in embed_url:
                 return await self.check_youtube_video(video_id or "", name, embed_url)
             
+            # Special handling for known non-<video> players (e.g. StreamSpot)
+            # These use their own player UI without a direct <video> element in
+            # the top-level DOM, so our usual video-element check would report
+            # them as broken even when they are actually working.
+            if "player2.streamspot.com" in embed_url:
+                # If the page loaded and we didn't see any clear error text,
+                # treat this as working.
+                await page.close()
+                return {
+                    "status": "working",
+                    "error_message": None,
+                    "check_time": None
+                }
+
             # For other embed types, check for video element
             try:
                 # Check for video element

@@ -514,6 +514,179 @@ class BrowserChecker:
                 "check_time": None
             }
     
+    async def check_generic_embed(self, embed_url: str, name: str) -> Dict:
+        """Check a generic embed URL (non-YouTube, e.g., Arclight API)."""
+        timeout = config.YOUTUBE_TIMEOUT
+        
+        try:
+            page = await self.context.new_page()
+            page.set_default_timeout(timeout * 1000)
+            
+            # Load the embed URL
+            await page.goto(embed_url, wait_until="domcontentloaded")
+            
+            # Wait for content to load (longer for API-based players)
+            await asyncio.sleep(5)
+            
+            # Check for error messages
+            page_text = await page.evaluate("document.body.innerText")
+            page_html = await page.evaluate("document.body.innerHTML")
+            
+            page_text_lower = page_text.lower()
+            
+            # Check for error indicators
+            error_indicators = [
+                "not available",
+                "video unavailable",
+                "error loading",
+                "404",
+                "not found",
+                "access denied"
+            ]
+            
+            for indicator in error_indicators:
+                if indicator in page_text_lower and len(page_text_lower) < 500:
+                    await page.close()
+                    return {
+                        "status": "broken",
+                        "error_message": f"Embed error: {indicator}",
+                        "check_time": None
+                    }
+            
+            # Check for video player elements (video tag, iframe, or player containers)
+            player_check = await page.evaluate("""
+                () => {
+                    // Check for video element
+                    const video = document.querySelector('video');
+                    if (video) {
+                        return {
+                            hasPlayer: true,
+                            type: 'video',
+                            readyState: video.readyState,
+                            error: video.error ? video.error.message : null
+                        };
+                    }
+                    
+                    // Check for iframe
+                    const iframe = document.querySelector('iframe');
+                    if (iframe) {
+                        return {
+                            hasPlayer: true,
+                            type: 'iframe',
+                            src: iframe.src
+                        };
+                    }
+                    
+                    // Check for common player container classes/ids
+                    const playerSelectors = [
+                        '[class*="player"]',
+                        '[id*="player"]',
+                        '[class*="video"]',
+                        '[id*="video"]',
+                        '[class*="media"]',
+                        '[id*="media"]'
+                    ];
+                    
+                    for (const selector of playerSelectors) {
+                        const elem = document.querySelector(selector);
+                        if (elem) {
+                            return {
+                                hasPlayer: true,
+                                type: 'container',
+                                selector: selector
+                            };
+                        }
+                    }
+                    
+                    // Check for play button or video-related content
+                    const playButtons = document.querySelectorAll('button, a, div');
+                    for (const btn of playButtons) {
+                        const text = (btn.innerText || btn.textContent || '').toLowerCase();
+                        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                        if (text.includes('play') || text.includes('video') || ariaLabel.includes('play')) {
+                            return {
+                                hasPlayer: true,
+                                type: 'playButton',
+                                text: text
+                            };
+                        }
+                    }
+                    
+                    // Check if page mentions video-related content (e.g., "click play", "enable javascript")
+                    const bodyText = document.body.innerText.toLowerCase();
+                    if (bodyText.includes('enable javascript') || 
+                        bodyText.includes('upgrade your browser') ||
+                        bodyText.includes('html5 video')) {
+                        // These messages usually mean the player is there but needs JS/browser support
+                        return {
+                            hasPlayer: true,
+                            type: 'requiresJs',
+                            message: 'Player requires JavaScript'
+                        };
+                    }
+                    
+                    return {hasPlayer: false};
+                }
+            """)
+            
+            if player_check.get("hasPlayer"):
+                # Player element found - check if there are errors
+                if player_check.get("error"):
+                    await page.close()
+                    return {
+                        "status": "broken",
+                        "error_message": f"Player error: {player_check.get('error')}",
+                        "check_time": None
+                    }
+                
+                # If we found a video element with good readyState, it's working
+                if player_check.get("type") == "video" and player_check.get("readyState", 0) >= 2:
+                    await page.close()
+                    return {
+                        "status": "working",
+                        "error_message": None,
+                        "check_time": None
+                    }
+                
+                # If we found any player element or play button, assume working
+                # (player might need user interaction to start)
+                await page.close()
+                return {
+                    "status": "working",
+                    "error_message": None,
+                    "check_time": None
+                }
+            
+            # If no player found but page loaded, might still be valid (e.g., redirects to player)
+            # Check if page has useful content (not just error)
+            if len(page_text) > 100:  # Has substantial content
+                await page.close()
+                return {
+                    "status": "working",
+                    "error_message": "Player page loaded (may require user interaction)",
+                    "check_time": None
+                }
+            
+            await page.close()
+            return {
+                "status": "broken",
+                "error_message": "No video player found on page",
+                "check_time": None
+            }
+            
+        except PlaywrightTimeoutError:
+            return {
+                "status": "broken",
+                "error_message": f"Timeout after {timeout} seconds",
+                "check_time": None
+            }
+        except Exception as e:
+            return {
+                "status": "broken",
+                "error_message": f"Error checking embed: {str(e)}",
+                "check_time": None
+            }
+    
     async def check_content(self, content_item: Dict) -> Dict:
         """Check a content item based on its type."""
         from datetime import datetime
@@ -539,13 +712,11 @@ class BrowserChecker:
         elif content_type in ["music", "movie"]:
             video_id = content_item.get("video_id")
             if video_id:
+                # YouTube video
                 result = await self.check_youtube_video(video_id, name, url)
             else:
-                result = {
-                    "status": "broken",
-                    "error_message": "No video ID found",
-                    "check_time": None
-                }
+                # Non-YouTube embed (e.g., Arclight API)
+                result = await self.check_generic_embed(url, name)
         elif content_type == "channel":
             video_id = content_item.get("video_id")
             result = await self.check_tv_channel(url, name, video_id)

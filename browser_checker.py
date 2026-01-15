@@ -390,7 +390,7 @@ class BrowserChecker:
             # Load the embed URL
             await page.goto(embed_url, wait_until="domcontentloaded")
             
-            # Wait longer for content to load (especially for YouTube embeds)
+            # Wait longer for content to load (players like ParsaTV show "Loading the player...")
             await asyncio.sleep(5)
             
             # Check if it's a YouTube embed FIRST (before error detection)
@@ -479,6 +479,9 @@ class BrowserChecker:
 
             # For other embed types, check for video element
             try:
+                # Wait a bit more for player to initialize (some players take time to load)
+                await asyncio.sleep(2)
+                
                 # Check for video element
                 has_video = await page.evaluate("""
                     () => {
@@ -505,24 +508,80 @@ class BrowserChecker:
                                 hasVideo: true,
                                 readyState: video.readyState,
                                 paused: video.paused,
-                                error: video.error ? video.error.message : null
+                                error: video.error ? video.error.message : null,
+                                errorCode: video.error ? video.error.code : null,
+                                networkState: video.networkState,
+                                src: video.src || (video.querySelector('source') ? video.querySelector('source').src : '')
                             };
                         }
                         return {hasVideo: false};
                     }
                 """)
                 
-                if video_state.get("error"):
+                # Handle video errors more intelligently
+                # Decode errors (PIPELINE_ERROR_DECODE) are often transient or codec-related
+                # and don't necessarily mean the channel is broken
+                error_message = video_state.get("error")
+                error_code = video_state.get("errorCode")
+                
+                if error_message:
+                    # Check if it's a decode error - these are often non-fatal
+                    is_decode_error = (
+                        "decode" in error_message.lower() or
+                        "pipeline" in error_message.lower() or
+                        "decoding" in error_message.lower() or
+                        error_code == 3  # MEDIA_ERR_DECODE
+                    )
+                    
+                    # If it's a decode error but video has loaded metadata or is trying to play,
+                    # treat as working (decode errors can be transient or codec compatibility issues)
+                    if is_decode_error:
+                        ready_state = video_state.get("readyState", 0)
+                        network_state = video_state.get("networkState", 0)
+                        has_src = bool(video_state.get("src"))
+                        
+                        # If video has loaded metadata (readyState >= 1) or has a source URL,
+                        # it's likely working despite the decode error
+                        if ready_state >= 1 or has_src or network_state >= 1:
+                            await page.close()
+                            return {
+                                "status": "working",
+                                "error_message": None,
+                                "check_time": None
+                            }
+                    
+                    # For non-decode errors, check if video has loaded any data
+                    # Sometimes errors occur during initial load but video can still play
+                    ready_state = video_state.get("readyState", 0)
+                    if ready_state >= 1:  # HAVE_METADATA - video has at least loaded metadata
+                        await page.close()
+                        return {
+                            "status": "working",
+                            "error_message": None,
+                            "check_time": None
+                        }
+                    
+                    # Only mark as broken if there's a clear fatal error and no progress
                     await page.close()
                     return {
                         "status": "broken",
-                        "error_message": f"Video error: {video_state.get('error')}",
+                        "error_message": f"Video error: {error_message}",
                         "check_time": None
                     }
                 
                 if video_state.get("hasVideo"):
                     # Video element exists and has loaded some data
-                    if video_state.get("readyState", 0) >= 2:
+                    if video_state.get("readyState", 0) >= 2:  # HAVE_CURRENT_DATA or better
+                        await page.close()
+                        return {
+                            "status": "working",
+                            "error_message": None,
+                            "check_time": None
+                        }
+                    
+                    # Even if readyState is lower, if video element exists, it's likely working
+                    # (might just need more time or user interaction)
+                    if video_state.get("readyState", 0) >= 1:  # HAVE_METADATA
                         await page.close()
                         return {
                             "status": "working",

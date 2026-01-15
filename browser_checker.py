@@ -390,34 +390,78 @@ class BrowserChecker:
             # Load the embed URL
             await page.goto(embed_url, wait_until="domcontentloaded")
             
-            # Wait for content to load
-            await asyncio.sleep(3)
+            # Wait longer for content to load (especially for YouTube embeds)
+            await asyncio.sleep(5)
             
-            # Check for error messages
+            # Check if it's a YouTube embed FIRST (before error detection)
+            # YouTube embeds have their own checking logic that handles "Watch on YouTube" buttons
+            if video_id or "youtube.com" in embed_url:
+                return await self.check_youtube_video(video_id or "", name, embed_url)
+            
+            # For non-YouTube embeds, check for error messages
+            # But be more careful - don't flag generic "error" text that might be part of normal page content
             page_text = await page.evaluate("document.body.innerText")
             page_text_lower = page_text.lower()
             
+            # Check for positive indicators first (player elements, video-related content)
+            has_positive_indicators = await page.evaluate("""
+                () => {
+                    // Check for video/iframe elements
+                    if (document.querySelector('video') || document.querySelector('iframe')) {
+                        return true;
+                    }
+                    // Check for player-related elements
+                    const playerElements = document.querySelectorAll('[class*="player"], [id*="player"], [class*="video"], [id*="video"]');
+                    if (playerElements.length > 0) {
+                        return true;
+                    }
+                    // Check for YouTube links (Watch on YouTube button)
+                    const youtubeLinks = document.querySelectorAll('a[href*="youtube.com"], a[href*="youtu.be"]');
+                    if (youtubeLinks.length > 0) {
+                        return true;
+                    }
+                    return false;
+                }
+            """)
+            
+            # More specific error indicators (avoid generic "error" which appears in many contexts)
             error_indicators = [
-                "offline",
+                "channel offline",
+                "stream offline",
                 "not available",
-                "error",
                 "unavailable",
                 "not found",
-                "404"
+                "404",
+                "this channel is offline",
+                "this stream is offline"
             ]
             
+            # Only flag as error if we see specific error phrases AND page is short (likely an error page)
+            # AND there are no positive indicators (player elements, etc.)
+            # This prevents false positives when "error" appears in normal page content
             for indicator in error_indicators:
-                if indicator in page_text_lower and len(page_text_lower) < 500:  # Short error messages
-                    await page.close()
-                    return {
-                        "status": "broken",
-                        "error_message": f"Channel appears offline: {indicator}",
-                        "check_time": None
-                    }
-            
-            # Check if it's a YouTube embed
-            if video_id or "youtube.com" in embed_url:
-                return await self.check_youtube_video(video_id or "", name, embed_url)
+                if indicator in page_text_lower:
+                    # If we have positive indicators, don't mark as broken (error text might be part of normal content)
+                    if has_positive_indicators:
+                        break  # Skip error detection if we found player elements
+                    
+                    # If page is very short, it's likely an error page
+                    if len(page_text_lower) < 300:
+                        await page.close()
+                        return {
+                            "status": "broken",
+                            "error_message": f"Channel appears offline: {indicator}",
+                            "check_time": None
+                        }
+                    # If page is longer but contains clear error message, still check
+                    # But be more lenient - might be part of larger page content
+                    if len(page_text_lower) < 500 and page_text_lower.count(indicator) > 1:
+                        await page.close()
+                        return {
+                            "status": "broken",
+                            "error_message": f"Channel appears offline: {indicator}",
+                            "check_time": None
+                        }
             
             # Special handling for known non-<video> players (e.g. StreamSpot)
             # These use their own player UI without a direct <video> element in

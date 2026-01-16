@@ -44,19 +44,14 @@ Available file types: `channels`, `music`, `radio`, `movies`
 
 ### Output Format
 
-Generate only PDF report:
+Generate HTML report (default, auto-opens in browser):
 ```bash
-python main.py --output pdf
+python main.py --output html
 ```
 
-Generate only CSV report:
+Prevent auto-opening the report:
 ```bash
-python main.py --output csv
-```
-
-Generate both (default):
-```bash
-python main.py --output both
+python main.py --output html --no-open
 ```
 
 ### Configuration Options
@@ -73,27 +68,20 @@ python main.py --max-concurrent 5
 
 ## Output
 
-Reports are saved in the `reports/` directory with timestamps:
-- `content_check_report_YYYY-MM-DD_HH-MM-SS.csv`
-- `content_check_report_YYYY-MM-DD_HH-MM-SS.pdf`
+HTML reports are saved in the `reports/` directory with timestamps:
+- `content_check_report_YYYY-MM-DD_HH-MM-SS.html`
 
-### CSV Report
-
-Contains columns:
-- Name
-- Type
-- URL
-- Status
-- Error Message
-- Check Time
-
-### PDF Report
-
-Contains:
-- Summary statistics (total, working, broken)
-- Summary by content type
-- Detailed broken content (grouped by type)
-- Working content (if not too many items)
+The HTML report includes:
+- **Summary Cards**: Total items, working, broken, and success rate
+- **Interactive Charts**: 
+  - Doughnut chart showing status overview
+  - Bar chart showing status breakdown by content type
+- **Interactive Table**: 
+  - All results with filtering by type and status
+  - Search functionality
+  - Clickable URLs
+  - Color-coded status badges
+- **Auto-open**: Automatically opens in your default browser (can be disabled with `--no-open`)
 
 ## Content Types
 
@@ -149,7 +137,6 @@ The script handles:
 - Python 3.7+
 - Playwright
 - requests
-- reportlab
 
 ## Notes
 

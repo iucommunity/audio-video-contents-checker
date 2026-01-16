@@ -43,9 +43,15 @@ Examples:
     parser.add_argument(
         '--output',
         type=str,
-        choices=['pdf', 'csv', 'both'],
-        default='both',
-        help='Output format: pdf, csv, or both (default: both)'
+        choices=['html'],
+        default='html',
+        help='Output format: html (default: html)'
+    )
+    
+    parser.add_argument(
+        '--no-open',
+        action='store_true',
+        help='Do not automatically open the HTML report in browser'
     )
     
     parser.add_argument(
@@ -127,7 +133,7 @@ async def main():
     # Generate reports
     print("\nGenerating reports...")
     report_gen = report_generator.ReportGenerator()
-    generated_files = report_gen.generate_reports(results, summary, args.output)
+    generated_files = report_gen.generate_reports(results, summary, args.output, auto_open=not args.no_open)
     
     print(f"\n✓ Check complete! Generated {len(generated_files)} report(s).")
     for file in generated_files:
